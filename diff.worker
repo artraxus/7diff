@@ -1,0 +1,7 @@
+runtime 'node'
+exec 'diff.js'
+file 'capture.js'
+file 'package.json'
+file 'payload_parser.js'
+build "npm install"
+remote

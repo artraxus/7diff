@@ -234,3 +234,10 @@ results
 build
 
 node_modules
+
+#############
+## Iron Worker
+#############
+
+.iron.json
+payload.json

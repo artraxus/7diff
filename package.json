@@ -3,7 +3,8 @@
   "version":"1.0.0",
   "dependencies": {
     "phantomjs" : "~1.9.2-6",
-	"ftp": "0.3.5"
+	"ftp": "0.3.5",
+	"mandrill-api": "1.0.37"
   },
   "private":"true"
 }
