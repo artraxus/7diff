@@ -4,16 +4,19 @@ var path = require('path');
 var ftp = require('ftp');
 var fs = require('fs');
 var payloadParcer = require('./payload_parser');
+var model = require('./model');
+
 var mandrill = require('mandrill-api/mandrill');
+var uuid = require('node-uuid');
 
 var binPath = phantomjs.path;
+var captureScript = 'capture.js';
 var captureFileName = 'capture.png';
+var ftpFileDelimiter = '__';
 var config = payloadParcer.parse(process.argv);
-
-var childArgs = [
-    path.join(__dirname, 'capture.js'),
-    config.capture.url
-]
+var ironio = require('node-ironio')(config.iron.token);
+var ironProject = ironio.projects(config.iron.project_id);
+var cache = ironProject.caches(config.cache.name);
 
 var upload = function (fileSource, filename) {
 
@@ -44,14 +47,14 @@ var sendMail = function (captureImg) {
 
     fs.readFile(captureImg, function (err, data) {
         var base64Img = new Buffer(data).toString('base64');
-        
+
         var message = {
-            "html": "<p>Example HTML content</p><img src=cid:captureImg />",
+            "html": "<p>Current website screen capture</p><img src=cid:captureImg />",
             "text": "Example text content",
             "subject": "example subject",
             "from_email": "capture@7diff.com",
             "to": [{
-                "email": "artraxus@gmail.com"
+                "email": config.user
             }],
             "headers": {
                 "Reply-To": "clement.folliet@gmail.com"
@@ -68,11 +71,78 @@ var sendMail = function (captureImg) {
         }, function (e) {
             console.log('A mandrill error occurred: ' + e.name + ' - ' + e.message);
         });
+    });
+};
+
+var getUserCache = function (userEmail, cb) {
+    cache.get(encodeURIComponent(userEmail), function (err, user) {
+        if (err) throw err;
+        cb(JSON.parse(user));
+    });
+}
+
+var setUserCache = function (user) {
+    cache.put(encodeURIComponent(user.email), JSON.stringify(user), function (err) {
+        if (err) throw err;
+    });
+};
+
+var setCapture = function (capture) {
+    getUserCache(config.user, function (user) {
+        console.log(JSON.stringify(user));
+        if (!user) {
+            user = new model.User(config.user);
+        }
+
+        var page = user.pages[capture.url];
+        if (!page) {
+            page = new model.Page(config.capture.url);
+            capture.isRef = true;
+        }
+
+        page.captures.push(capture);
+        user.pages.push(page);
+
+        setUserCache(user);
     });    
 };
 
-childProcess.execFile(binPath, childArgs, function (err, stdout, stderr) {
-    if (err) throw err;
-    upload(captureFileName, captureFileName);
-    sendMail(captureFileName);
-});
+var takeCapture = function (url, outputFilename, cb) {
+    var childArgs = [
+        path.join(__dirname, captureScript),
+        url,
+        outputFilename
+    ];
+
+    childProcess.execFile(binPath, childArgs, function (err, stdout, stderr) {
+        if (err) throw err;
+        cb();
+    });
+};
+
+function run() {
+
+    var capture = new model.Capture();
+
+    takeCapture(config.capture.url, captureFileName, function () {
+        upload(captureFileName, capture.fileId + '.png');
+    });
+
+
+    //takeCapture()
+    //      upload()
+    //getRefCapture()
+    //
+    //CompareCapture()
+    //
+    //SendEmail()
+
+
+
+    //upload(captureFileName, capture.fileId + '.png');   
+    //setCapture(capture);
+    //sendMail(captureFileName);
+
+}
+
+run();
