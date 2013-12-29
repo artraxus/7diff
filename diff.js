@@ -5,42 +5,78 @@ var ftp = require('ftp');
 var fs = require('fs');
 var payloadParcer = require('./payload_parser');
 var model = require('./model');
-
+var q = require('q');
 var mandrill = require('mandrill-api/mandrill');
 var uuid = require('node-uuid');
 
 var binPath = phantomjs.path;
 var captureScript = 'capture.js';
 var captureFileName = 'capture.png';
+var captureRefFileName = 'ref.png';
 var ftpFileDelimiter = '__';
 var config = payloadParcer.parse(process.argv);
 var ironio = require('node-ironio')(config.iron.token);
 var ironProject = ironio.projects(config.iron.project_id);
 var cache = ironProject.caches(config.cache.name);
 
-var upload = function (fileSource, filename) {
+var ftpConfig = {
+    host: config.ftp.host,
+    user: config.ftp.user,
+    password: config.ftp.password
+};
+var ftpWorkingDirectory = '7diff';
 
+var upload = function (fileSource, filename) {
+    var defer = q.defer();
     var ftpClient = new ftp();
 
     ftpClient.on('ready', function () {
-        ftpClient.cwd('7diff', function (err) {
-            if (err) throw err;
-        });
-
-        ftpClient.put(fileSource, filename, function (err) {
-            if (err) throw err;
-            ftpClient.end();
+        ftpClient.cwd(ftpWorkingDirectory, function (err) {
+            if (err) {
+                defer.reject(err);
+            }
+            else {
+                ftpClient.put(fileSource, filename, function (err) {
+                    if (err) { defer.reject(err); }
+                    else {
+                        ftpClient.end();
+                        defer.resolve();
+                    }
+                });
+            }
         });
     });
 
-    var ftpConfig = {
-        host: config.ftp.host,
-        user: config.ftp.user,
-        password: config.ftp.password
-    };
+    ftpClient.connect(ftpConfig);
+    return defer.promise;
+}
+
+var download = function (fileSource, filename) {
+    var defer = q.defer();
+    var ftpClient = new ftp();
+
+    ftpClient.on('ready', function () {
+        ftpClient.cwd(ftpWorkingDirectory, function (err) {
+            if (err) {
+                return defer.reject(err);
+            }
+            else {
+                ftpClient.get(fileSource, function (err, stream) {
+                    if (err) {
+                        return defer.reject(err);
+                    }
+                    else {
+                        stream.once('close', function () { ftpClient.end(); return defer.resolve(); });
+                        stream.pipe(fs.createWriteStream(filename));
+                    }
+                });
+            }
+        });
+    });
 
     ftpClient.connect(ftpConfig);
-}
+    return defer.promise;
+};
 
 var sendMail = function (captureImg) {
     var mandrillClient = new mandrill.Mandrill(config.mail.api_key);
@@ -74,40 +110,47 @@ var sendMail = function (captureImg) {
     });
 };
 
-var getUserCache = function (userEmail, cb) {
+var getUserCache = function (userEmail) {
+    var defer = q.defer();
+
     cache.get(encodeURIComponent(userEmail), function (err, user) {
-        if (err) throw err;
-        cb(JSON.parse(user));
+        if (err) defer.reject(err);
+        else {
+            if (user) {
+                defer.resolve(new model.User(JSON.parse(user)));
+            }
+            else {
+                defer.resolve(null);
+            }
+        }
     });
+
+    return defer.promise;
 }
 
 var setUserCache = function (user) {
+    var defer = q.defer();
     cache.put(encodeURIComponent(user.email), JSON.stringify(user), function (err) {
-        if (err) throw err;
+        if (err) defer.reject(err);
+        else defer.resolve();
     });
+    return defer.promise;
 };
 
-var setCapture = function (capture) {
-    getUserCache(config.user, function (user) {
-        console.log(JSON.stringify(user));
-        if (!user) {
-            user = new model.User(config.user);
-        }
+var setCapture = function (user, capture) {
+    var page = user.pages[capture.url];
+    if (!page) {
+        page = new model.Page();
+        page.url = config.capture.url
+        capture.isRef = true;
+    }
 
-        var page = user.pages[capture.url];
-        if (!page) {
-            page = new model.Page(config.capture.url);
-            capture.isRef = true;
-        }
-
-        page.captures.push(capture);
-        user.pages.push(page);
-
-        setUserCache(user);
-    });    
+    page.captures.push(capture);
+    user.pages.push(page);
 };
 
-var takeCapture = function (url, outputFilename, cb) {
+var takeCapture = function (url, outputFilename) {
+    var defer = q.defer();
     var childArgs = [
         path.join(__dirname, captureScript),
         url,
@@ -115,32 +158,50 @@ var takeCapture = function (url, outputFilename, cb) {
     ];
 
     childProcess.execFile(binPath, childArgs, function (err, stdout, stderr) {
-        if (err) throw err;
-        cb();
+        if (err) defer.reject(err);
+        else defer.resolve()
     });
+
+    return defer.promise;
 };
 
 function run() {
 
-    var capture = new model.Capture();
+    var capture = new model.Capture(null);
+    var url = config.capture.url;
 
-    takeCapture(config.capture.url, captureFileName, function () {
-        upload(captureFileName, capture.fileId + '.png');
-    });
+    takeCapture(url, captureFileName).then(function () {
+        return upload(captureFileName, capture.fileId + '.png');
+    }).done();
+
+    getUserCache(config.user).then(function (user) {
+        if (!user) {
+            user = new model.User();
+            user.email = config.user
+        }
+
+        if (user) {
+            var page = user.getPage(url);
+            if (page) {
+                var refCapture = page.getRef();
+                if (refCapture) {
+                    download(refCapture.fileId + '.png', captureRefFileName).then(function () {
+                        // do compare
+                    }).then(function () {
+                        // send email
+                    }).done();
+                }
+            }
+        }
+
+        setCapture(user, capture);
+        return setUserCache(user);
+    }).done();
 
 
-    //takeCapture()
-    //      upload()
-    //getRefCapture()
     //
     //CompareCapture()
     //
-    //SendEmail()
-
-
-
-    //upload(captureFileName, capture.fileId + '.png');   
-    //setCapture(capture);
     //sendMail(captureFileName);
 
 }
