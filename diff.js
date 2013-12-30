@@ -5,6 +5,7 @@ var ftp = require('ftp');
 var fs = require('fs');
 var payloadParcer = require('./payload_parser');
 var model = require('./model');
+var pngDiff = require('png-diff');
 var q = require('q');
 var mandrill = require('mandrill-api/mandrill');
 var uuid = require('node-uuid');
@@ -13,6 +14,7 @@ var binPath = phantomjs.path;
 var captureScript = 'capture.js';
 var captureFileName = 'capture.png';
 var captureRefFileName = 'ref.png';
+var captureDiffFileName = 'diff.png';
 var ftpFileDelimiter = '__';
 var config = payloadParcer.parse(process.argv);
 var ironio = require('node-ironio')(config.iron.token);
@@ -58,15 +60,18 @@ var download = function (fileSource, filename) {
     ftpClient.on('ready', function () {
         ftpClient.cwd(ftpWorkingDirectory, function (err) {
             if (err) {
-                return defer.reject(err);
+                defer.reject(err);
             }
             else {
                 ftpClient.get(fileSource, function (err, stream) {
                     if (err) {
-                        return defer.reject(err);
+                        defer.reject(err);
                     }
                     else {
-                        stream.once('close', function () { ftpClient.end(); return defer.resolve(); });
+                        stream.once('close', function () {
+                            ftpClient.end();
+                            console.log('22'); defer.resolve();
+                        });
                         stream.pipe(fs.createWriteStream(filename));
                     }
                 });
@@ -137,18 +142,6 @@ var setUserCache = function (user) {
     return defer.promise;
 };
 
-var setCapture = function (user, capture) {
-    var page = user.pages[capture.url];
-    if (!page) {
-        page = new model.Page();
-        page.url = config.capture.url
-        capture.isRef = true;
-    }
-
-    page.captures.push(capture);
-    user.pages.push(page);
-};
-
 var takeCapture = function (url, outputFilename) {
     var defer = q.defer();
     var childArgs = [
@@ -165,43 +158,67 @@ var takeCapture = function (url, outputFilename) {
     return defer.promise;
 };
 
+var compareImages = function () {
+    pngDiff.outputDiff(captureFileName, captureRefFileName, captureDiffFileName, function (err) {
+        if (err) throw err;
+        // highlights the difference in red
+        console.log('Diff saved!');
+    });
+};
+
 function run() {
 
     var capture = new model.Capture(null);
     var url = config.capture.url;
 
-    takeCapture(url, captureFileName).then(function () {
+    var capturePromise = takeCapture(url, captureFileName);
+    var downloadPromise = null;
+    var hasRefCapture = false;
+
+    console.log('1');
+
+    capturePromise.then(function () {
+        console.log('21');
         return upload(captureFileName, capture.fileId + '.png');
     }).done();
 
-    getUserCache(config.user).then(function (user) {
+    var xx = getUserCache(config.user).then(function (user) {
+        var defer = q.defer();
+        var downloadPromise = null;
+
         if (!user) {
             user = new model.User();
             user.email = config.user
         }
 
-        if (user) {
-            var page = user.getPage(url);
-            if (page) {
-                var refCapture = page.getRef();
-                if (refCapture) {
-                    download(refCapture.fileId + '.png', captureRefFileName).then(function () {
-                        // do compare
-                    }).then(function () {
-                        // send email
-                    }).done();
-                }
+        var page = user.getPage(url);
+        if (page) {
+            var refCapture = page.getRef();
+            if (refCapture) {
+                hasRefCapture = true;
+                downloadPromise = download(refCapture.fileId + '.png', captureRefFileName);
             }
         }
+        else {
+            page = new model.Page();
+            page.url = config.capture.url
+            user.pages.push(page);
+            capture.isRef = true;
+        }
 
-        setCapture(user, capture);
-        return setUserCache(user);
-    }).done();
+        page.captures.push(capture);
 
+        q.all([setUserCache(user), downloadPromise]).done(defer.resolve);
 
-    //
-    //CompareCapture()
-    //
+        return defer.promise;
+    });
+
+    q.all([capturePromise, xx]).done(function () {
+        if (hasRefCapture) {
+            compareImages();
+        }
+    });
+
     //sendMail(captureFileName);
 
 }
