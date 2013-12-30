@@ -5,7 +5,7 @@ var ftp = require('ftp');
 var fs = require('fs');
 var payloadParcer = require('./payload_parser');
 var model = require('./model');
-var pngDiff = require('png-diff');
+var pngDiff = require('./pngdiff');
 var q = require('q');
 var mandrill = require('mandrill-api/mandrill');
 var uuid = require('node-uuid');
@@ -70,7 +70,6 @@ var download = function (fileSource, filename) {
                     else {
                         stream.once('close', function () {
                             ftpClient.end();
-                            console.log('22'); defer.resolve();
                         });
                         stream.pipe(fs.createWriteStream(filename));
                     }
@@ -152,18 +151,21 @@ var takeCapture = function (url, outputFilename) {
 
     childProcess.execFile(binPath, childArgs, function (err, stdout, stderr) {
         if (err) defer.reject(err);
-        else defer.resolve()
+        else defer.resolve();
     });
 
     return defer.promise;
 };
 
 var compareImages = function () {
-    pngDiff.outputDiff(captureFileName, captureRefFileName, captureDiffFileName, function (err) {
-        if (err) throw err;
-        // highlights the difference in red
-        console.log('Diff saved!');
+    var defer = q.defer();
+
+    pngDiff.outputDiff(captureFileName, captureRefFileName, captureDiffFileName, function (err, hasDiff) {
+        if (err) defer.reject(err);
+        else defer.resolve(hasDiff);
     });
+
+    return defer.promise;
 };
 
 function run() {
@@ -174,15 +176,12 @@ function run() {
     var capturePromise = takeCapture(url, captureFileName);
     var downloadPromise = null;
     var hasRefCapture = false;
-
-    console.log('1');
-
+    
     capturePromise.then(function () {
-        console.log('21');
         return upload(captureFileName, capture.fileId + '.png');
     }).done();
 
-    var xx = getUserCache(config.user).then(function (user) {
+    var otherPromise = getUserCache(config.user).then(function (user) {
         var defer = q.defer();
         var downloadPromise = null;
 
@@ -213,9 +212,17 @@ function run() {
         return defer.promise;
     });
 
-    q.all([capturePromise, xx]).done(function () {
+    q.all([capturePromise, otherPromise]).done(function () {
         if (hasRefCapture) {
-            compareImages();
+            compareImages().then(function (hasDiff) {
+                if (hasDiff) {
+                    //send diff email
+                } else {
+                    // send no diff email
+                }
+            }).done();
+        } else {
+            //send first capture email
         }
     });
 
