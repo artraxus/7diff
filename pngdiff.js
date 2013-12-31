@@ -60,10 +60,14 @@ function outputDiff(imagePath1, imagePath2, outputPath, done) {
         }
 
         if (hasDiff) {
-            diff.pack().pipe(fs.createWriteStream(outputPath));
+            var pack = diff.pack();
+            pack.pipe(fs.createWriteStream(outputPath));
+            pack.on('end', function () {
+                done(null, hasDiff);
+            });
+        } else {
+            done(null, hasDiff);
         }
-
-        done(null, hasDiff);
     });
 }
 

@@ -6,6 +6,7 @@ var fs = require('fs');
 var payloadParcer = require('./payload_parser');
 var model = require('./model');
 var pngDiff = require('./pngdiff');
+var mailMessages = require('./mailMessages');
 var q = require('q');
 var mandrill = require('mandrill-api/mandrill');
 var uuid = require('node-uuid');
@@ -26,6 +27,7 @@ var ftpConfig = {
     user: config.ftp.user,
     password: config.ftp.password
 };
+var ftpSender = 'capture@7diff.com';
 var ftpWorkingDirectory = '7diff';
 
 var upload = function (fileSource, filename) {
@@ -82,35 +84,13 @@ var download = function (fileSource, filename) {
     return defer.promise;
 };
 
-var sendMail = function (captureImg) {
+var sendMail = function (mailMessage) {
     var mandrillClient = new mandrill.Mandrill(config.mail.api_key);
-
-    fs.readFile(captureImg, function (err, data) {
-        var base64Img = new Buffer(data).toString('base64');
-
-        var message = {
-            "html": "<p>Current website screen capture</p><img src=cid:captureImg />",
-            "text": "Example text content",
-            "subject": "example subject",
-            "from_email": "capture@7diff.com",
-            "to": [{
-                "email": config.user
-            }],
-            "headers": {
-                "Reply-To": "clement.folliet@gmail.com"
-            },
-            "images": [{
-                "type": "image/png",
-                "name": "captureImg",
-                "content": base64Img
-            }]
-        };
-
-        mandrillClient.messages.send({ "message": message }, function (result) {
-            console.log("messages.send result: " + result[0].email + " " + result[0].status + " " + result[0].reject_reason);
-        }, function (e) {
-            console.log('A mandrill error occurred: ' + e.name + ' - ' + e.message);
-        });
+    
+    mandrillClient.messages.send({ "message": mailMessage }, function (result) {
+        console.log("messages.send result: " + result[0].email + " " + result[0].status + " " + result[0].reject_reason);
+    }, function (e) {
+        console.log('A mandrill error occurred: ' + e.name + ' - ' + e.message);
     });
 };
 
@@ -195,7 +175,7 @@ function run() {
             var refCapture = page.getRef();
             if (refCapture) {
                 hasRefCapture = true;
-                downloadPromise = download(refCapture.fileId + '.png', captureRefFileName);
+                downloadPromise = download(refCapture.fileId + '.png', captureRefFileName).done();
             }
         }
         else {
@@ -216,17 +196,21 @@ function run() {
         if (hasRefCapture) {
             compareImages().then(function (hasDiff) {
                 if (hasDiff) {
-                    //send diff email
+                    mailMessages.diffMailMessage(ftpSender, config.user, url, captureDiffFileName).done(function (mailMessage) {
+                        sendMail(mailMessage);
+                    });
                 } else {
-                    // send no diff email
+                    mailMessages.noDiffMailMessage(ftpSender, config.user, url, captureFileName).done(function (mailMessage) {
+                        sendMail(mailMessage);
+                    });
                 }
             }).done();
         } else {
-            //send first capture email
+            mailMessages.firstCaptureMailMessage(ftpSender, config.user, url, captureFileName).done(function (mailMessage) {
+                sendMail(mailMessage);
+            });
         }
     });
-
-    //sendMail(captureFileName);
 
 }
 
